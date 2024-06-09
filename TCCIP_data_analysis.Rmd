@@ -1,0 +1,175 @@
+---
+title: "TCCIP data regionally extracting"
+output: html_notebook
+---
+# 概述
+將TCCIP的資料依據研究範圍挑選出來，再進行後續計算。
+# 0. package
+```{r,message=FALSE}
+library(data.table)
+library(sf)
+library(tidyverse)
+library(readr) # read the file in .zip
+library(parallel)  
+library(SPEI)
+library(magick)
+w_path <- "D:/climate_data/TCCIP/日資料/1960_2022/"
+pro_path <-"G:/我的雲端硬碟/研究室計畫/2024/玉管處/2024/" 
+```
+
+# 1. extract the TCCIP point in the specific region.
+Due to the weather data in TCCIP is presented in a tabular format. We need to filter the point which was located in the national park.
+
+```{r}
+region <- st_read("rawdata/layer/Yushan_national_park_region.shp")
+tccip_p <- fread(paste0(w_path,"觀測_日資料_臺灣_平均溫/觀測_日資料_臺灣_平均溫_1960.csv"))
+tccip_p <- tccip_p[,.(LON,LAT)]
+tccip_p <- st_as_sf(tccip_p, coords = c("LON", "LAT"), crs = 4326)
+class(tccip_p)
+p_npr <- st_intersection(tccip_p,region)
+p_coord <- st_coordinates(p_npr) %>% as.data.table()
+setnames(p_coord,c("X","Y"),c("LON","LAT"))
+p_coord[,c_id:=paste0(LON,LAT)]
+```
+
+# 2. extract the TCCIP weather data by point in NP
+pass the p_coord to extract the weather data from TCCIP table
+## 2.1 established the function
+```{r}
+
+tccip_region_ext <- function(i,var,wpath,coord){
+  require(data.table)
+  dt <- fread(paste0(wpath,"觀測_日資料_臺灣_",var,"/觀測_日資料_臺灣_",var,"_",i,".csv"))
+  dt[,c_id:=paste0(LON,LAT)]
+  dt_np <-dt[coord,on=.(c_id)]
+  dt_np[,c_id:=NULL]
+  dt_t <- melt(dt_np,id.vars=c("LON","LAT"),variable.name="date_t")
+  dt_t[,date:=as.Date(date_t,format="%Y%m%d")][
+    ,c("year","month"):=.(year(date),month(date))]
+  dt_t <- dt_t[!is.na(date)]
+  if (grepl("溫",var)){
+    dt_m <- dt_t[,.(value=mean(value,na.rm=TRUE)),by=.(LON,LAT,year,month)]
+  }else{
+    dt_m <- dt_t[,.(value=sum(value,na.rm=TRUE)),by=.(LON,LAT,year,month)]
+  }
+  return(dt_m)
+}
+
+```
+## 2.2 data processing
+```{r}
+year <- 1995:2022
+core <- makeCluster(10)
+temp_mean <-parLapply(core,year,tccip_region_ext,var="平均溫",wpath=w_path,coord=p_coord)
+temp_max <-parLapply(core,year,tccip_region_ext,var="最高溫",wpath=w_path,coord=p_coord)
+temp_min <-parLapply(core,year,tccip_region_ext,var="最低溫",wpath=w_path,coord=p_coord)
+pre <-parLapply(core,year,tccip_region_ext,var="降雨量",wpath=w_path,coord=p_coord)
+stopCluster(core)
+
+clm_all <- list(temp_mean,temp_max,temp_min,pre)
+
+```
+
+## 2.3 calculated the weather index
+
+```{r}
+
+clm_all <- lapply(clm_all,rbindlist)
+clm_all <- lapply(clm_all,function(clm_dt){
+  clm_dt[,wkt:=paste("POLYGON ((",
+                   LON-0.005,LAT-0.005,",",
+                   LON+0.005,LAT-0.005,",",
+                   LON+0.005,LAT+0.005,",",
+                   LON-0.005,LAT+0.005,",",
+                   LON-0.005,LAT-0.005,"))",
+                   sep=" ")]
+  return(clm_dt)
+})
+
+clm_Y <- lapply(clm_all,function(clm_dt){
+  yr <- clm_dt[,.(value=mean(value)),by=.(LON,LAT,year,wkt)]
+  yr[,v_mean:=mean(value),by=.(wkt)]
+  yr[,v_sd:=sd(value),by=.(wkt)]
+  yr[,st_value:=(value-v_mean)/v_sd]
+  return(yr)
+})
+clm_Y[[4]][,value:=value*12]
+y_var <- c("mean_T","max_T"
+           ,"min_T","PRE")
+lapply(1:3,function(i){
+  dt <- clm_Y[[i]]
+  var <- y_var[i]
+  dir.create(paste0("result/plot/yearly_",var))
+  lapply(1995:2022,function(y){
+    dt_y <- dt[year==y]
+    dt_y <-st_as_sf(dt_y,wkt ="wkt",crs=4326) 
+    p <- ggplot()+
+          geom_sf(data=dt_y,aes(fill=st_value))+
+          labs(fill="TI",title =y)+
+          scale_fill_gradient2(
+            high ="#A62621",
+            mid = "gray80",
+            low = "#3C56A6",
+            midpoint = 0,
+            limits=c(-4,4)
+          )
+    ggsave(paste0("result/plot/yearly_",var,"/",var,"_",y,".jpeg"),
+           height = 5,width = 8,dpi=600,plot=p)
+  })
+})
+
+y_var <- c("mean_T","max_T"
+           ,"min_T","PRE")
+lapply(1:3,function(i){
+  dt <- clm_Y[[i]]
+  var <- y_var[i]
+  dir.create(paste0("result/plot/yearly_org_",var))
+  lapply(1995:2022,function(y){
+    dt_y <- dt[year==y]
+    dt_y <-st_as_sf(dt_y,wkt ="wkt",crs=4326) 
+    p <- ggplot()+
+          geom_sf(data=dt_y,aes(fill=value))+
+          labs(fill=var,title =y)+
+          scale_fill_gradient(
+            high ="#A62621",
+            low = "#3C56A6",
+            limits=c(min(dt$value),max(dt$value))
+          )
+    ggsave(paste0("result/plot/yearly_org_",var,"/org",var,"_",y,".jpeg"),
+           height = 5,width = 8,dpi=600,plot=p)
+  })
+})
+PRE_Y <- clm_Y[[4]]
+### deal with precipitation
+  lapply(1995:2022,function(y){
+    dt_y <- PRE_Y[year==y]
+    dt_y <-st_as_sf(dt_y,wkt ="wkt",crs=4326) 
+    p <- ggplot()+
+          geom_sf(data=dt_y,aes(fill=st_value))+
+          labs(fill="rPRE",title =y)+
+          scale_fill_gradient2(
+            high ="#40A928",
+            mid = "gray80",
+            low = "#DEB91B",
+            midpoint = 0,
+            limits=c(-4,4)
+          )
+    ggsave(paste0("result/plot/yearly_PRE/PRE_",y,".jpeg"),
+           height = 5,width = 8,dpi=600,plot=p)
+  })
+```
+ 
+## 2.4 save the data
+ 
+```{r}
+y_var <- c("mean_T","max_T"
+           ,"min_T","PRE")
+### save the total weather data table
+lapply(1:4,function(i){
+  dt <- clm_all[[i]]
+  var <- y_var[i]
+  fwrite(dt,paste0(pro_path,"rawdata/weather_table/basic_data_",var,".csv"))
+  })
+```
+ 
+ 

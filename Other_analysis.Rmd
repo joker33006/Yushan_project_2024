@@ -1,0 +1,115 @@
+---
+title: "grassland area assess"
+output: html_notebook
+---
+# 概述
+
+利用sentinel的分類圖層界定出草原的位置，再用草原位置解析landsat衛星的NDVI數值，從而界定草原的長期面積變化。
+# 0. package
+```{r}
+library(data.table)
+library(tidyverse)
+library(sf)
+library(terra)
+w_path <- "D:/climate_data/TCCIP/日資料/1960_2022/"
+pro_path <-"G:/我的雲端硬碟/研究室計畫/2024/玉管處/2025/" 
+```
+# 1. 草原位置與NDVI數值對應
+
+##1.1 方法失敗
+```{r}
+## input the grassland point
+grass_loc <- st_read(paste0(pro_path,"rawdata/layer/grassland_point.shp")) 
+## loading the grassland location layer in 2017
+## loading the NDVI in 2017
+ndvi_17 <- rast(paste0(pro_path,"rawdata/layer/Landsat_NDVI_1987_2024/YNP_ndvi_median_2017.tif"))
+grass_loc<- vect(grass_loc)
+
+g_value <- terra::extract(ndvi_17, grass_loc, fun = mean) %>% as.data.table
+g_f <- ndvi_17 * (ndvi_17 >min(g_value)  & ndvi_17 < max(g_value))
+plot(g_f)
+g_value <- rbindlist(g_value)
+min(g_value$NDVI,na.rm=T)
+```
+
+##1.2 改使用modis與sentinel
+
+```{r}
+g_a_st <- lapply(2001:2023,function(year){
+    m<- rast(paste0(pro_path,"/rawdata/layer/modis_landuse/Yushan_landuse_modis_",year,".tif"))
+    g_f <- (m[[3]] >0)  & (m[[3]] < 5)
+    dt <- global(g_f, "sum", na.rm = TRUE) %>% as.data.table()
+    dt[,y:=year]
+    return(dt)
+})
+g_a_st <- rbindlist(g_a_st)
+g_a_st[,sum_area:=sum*0.5*0.5]
+g_a_st[,sum_area:=sum_area/70.25*33.869]
+
+### 繪圖
+ggplot(g_a_st,aes(x=y,y=sum_area))+
+    geom_line()+
+    theme_bw()+
+    geom_smooth()+
+    labs(x="Year",y= expression("Grasslnad area (" ~ km^2~")"))+
+    ylim(c(20,40))+
+    scale_x_continuous(breaks = seq(2000,2024,2))
+ggsave(paste0(pro_path,"result/plot/grassland_area_2001_2023.jpeg"),height = 5,width = 7,dpi=600)
+```
+# 2. 推移帶樣區濕度分析
+```{r}
+wdt <- fread(paste0(pro_path,"rawdata/TKK_soil_moi_tem_202404_202411.csv"))
+colnames(wdt)[2:6] <- c("Date_time","T_N6","ST","T_12","moist")
+wdt[,time:=as.POSIXct(Date_time)]
+wdt[,type:=substr(plot,1,1)]
+ggplot(wdt,aes(x=time,y=moist,color=plot))+
+    geom_line()+
+    facet_grid(type~.)
+```
+
+# 3. 國家公園碳吸存分析
+
+```{r}
+region <- st_read(paste0(pro_path,"rawdata/layer/玉山NP(4通)範圍界1130312/Yushan_NP_region.shp"))
+carbon_st_p <- list.files(paste0(pro_path,"/rawdata/layer/NPP/"),full.names = TRUE,
+                          pattern=".tif$") 
+c_lay <- lapply(carbon_st_p,function(layer){
+    lr <- rast(layer)
+    lr_c <- crop(lr,region)
+    return(lr_c)
+}) 
+
+carb_all <- c_lay[[1]][[2]]*0.0001
+
+for ( i in 2:24){
+    carb <- c_lay[[i]][[2]]
+    carb_all <- carb_all+carb*0.0001
+}
+plot(carb_all)
+writeRaster(carb_all,paste0(pro_path,"/result/NPP_2001_2024.tif"), overwrite = TRUE)
+### calculate the total NPP
+NPP_stat_yearly <- lapply(c_lay,function(layer){
+    sum <- global(layer[[2]],sum,na.rm=TRUE) %>% as.data.table()
+    sum <- sum*250000/1000
+    return(sum)
+})
+plot(c_lay[[i]][[2]]*0.0001)
+lapply(1:24,function(i){
+    ly <- c_lay[[i]][[2]]*0.0001
+    writeRaster(ly,paste0(pro_path,"result/plot/NPP_layer/",2000+i,".tif"))})
+
+
+NPP_stat_yearly <- rbindlist(NPP_stat_yearly)
+NPP_stat_yearly[,Tg:=sum/10^6][,year:=2001:2024]
+ggplot(NPP_stat_yearly,aes(x=year,y=Tg))+
+    geom_line()+
+    ylim(c(1,1.5))+
+    scale_x_continuous(breaks=seq(2001,2024,2))+
+    theme_bw()
+
+### check the difference between 2004 and 2024
+NPP_dif_04_24 <- (c_lay[[4]][[2]]-c_lay[[24]][[2]])*0.0001
+
+writeRaster(NPP_dif_04_24,paste0(pro_path,"result/plot/NPP_layer/NPP_diff_04_24.tif"))
+```
+

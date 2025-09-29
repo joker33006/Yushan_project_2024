@@ -1,0 +1,104 @@
+---
+title: "鳥類分布做圖"
+output: html_notebook
+---
+# 概述
+協助鳥類分布做圖
+#0. package
+```{r}
+library(data.table)
+library(tidyverse)
+library(sf)
+library(showtext)
+library(patchwork)
+library(ggspatial) # 加比例尺和北方
+pro_path <-"G:/我的雲端硬碟/研究室計畫/2024/玉管處/2025/" 
+```
+# 1. data input 
+```{r}
+dt <- fread(paste0(pro_path,"rawdata/Bird_test_sitepoint_wgs84.csv"),
+            encoding = "UTF-8")
+tw_count <- st_read("D:/GIS_Data/縣市界/本島.gpkg")
+colnames(dt)
+
+dt_r <- unique(dt[,.(species,x,y)])
+np_reg <- st_read(paste0(pro_path,"/rawdata/layer/Yushan_NP_region.shp"))
+dt_all <- unique(dt[,.(x,y)])
+
+ggplot()+
+    geom_sf(data=tw_count)+
+    geom_sf(data=np_reg,fill = NA,
+            color = "red",
+            linewidth = 0.3)+
+    geom_point(data=dt_all,aes(x=x,y=y),
+               color="#2863AC",size=0.6)+
+    # 加比例尺
+    annotation_scale(
+      location = "br",    
+      width_hint = 0.2,   # 比例尺寬度佔圖寬的比例 (0~1)
+      text_cex = 0.8,      # 字體大小
+      height = unit(0.2, "cm"))+
+    annotation_north_arrow( #指北針
+      location = "tl", 
+      which_north = "true",
+      style = north_arrow_fancy_orienteering,
+      height = grid::unit(2, "cm"),   # 調整高度
+      width  = grid::unit(2, "cm")    # 調整寬度
+    ) +
+    ylim(c(21.8,25.5))+
+    xlim(c(119.5,122.2))+
+    theme_bw()+
+    labs(title ="All sitepoint:4505",y="",x="",alpha="Sitepoint")+ 
+    theme(plot.title = element_text(size = 14,family = '微軟正黑體'),
+          axis.text.x = element_text(angle = 45, 
+                                     hjust = 1, 
+                                     vjust = 1))
+ggsave(paste0(pro_path,"result/plot/Bird/site_dis.jpeg"),width=6,height = 7.5)
+
+bplt <- lapply(unique(dt$species),function(spe){
+  dtp <- dt_r[species==spe]
+  n <- nrow(dtp)
+  showtext_auto()
+  showtext_opts(dpi = 300)
+  p <- ggplot()+
+    geom_sf(data=tw_count)+
+    geom_sf(data=np_reg,fill = NA,
+            color = "red",
+            linewidth = 0.3)+
+    geom_point(data=dtp,aes(x=x,y=y),
+               color="#A4423E",size=0.6)+
+    # 加比例尺
+    annotation_scale(
+      location = "br",    
+      width_hint = 0.2,   # 比例尺寬度佔圖寬的比例 (0~1)
+      text_cex = 0.8,      # 字體大小
+      height = unit(0.2, "cm"))+
+    annotation_north_arrow( #指北針
+      location = "tl", 
+      which_north = "true",
+      style = north_arrow_fancy_orienteering,
+      height = grid::unit(0.8, "cm"),   # 調整高度
+      width  = grid::unit(0.8, "cm")    # 調整寬度
+    ) +
+    ylim(c(21.8,25.5))+
+    xlim(c(119.5,122.2))+
+    theme_bw()+
+    labs(title =paste0(spe,"\n","occ:",n),y="",x="")+ 
+    theme(plot.title = element_text(size = 14,family = '微軟正黑體'),
+          axis.text.x = element_text(angle = 45, 
+                                     hjust = 1, 
+                                     vjust = 1))
+  ggsave(paste0(pro_path,"result/plot/Bird/each/",spe,".jpeg"),plot=p,height = 8,
+         width = 7,dpi=300)
+
+})
+bplt[[1]]
+{
+wrap_plots(bplt[1:16],ncol=4)
+ggsave(paste0(pro_path,"result/plot/Bird/spe_dis_1.jpeg"),width=12,height = 16)
+wrap_plots(bplt[17:32],ncol=4)
+ggsave(paste0(pro_path,"result/plot/Bird/spe_dis_2.jpeg"),width=12,height = 16)
+}
+```
+
+

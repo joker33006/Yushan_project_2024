@@ -14,7 +14,8 @@ library(parallel)
 library(SPEI)
 library(magick)
 library(patchwork)
-w_path <- "D:/climate_data/TCCIP/日資料/1960_2022/"
+library(showtext)
+w_path <- "D:/climate_data/TCCIP/日資料/1960_2023/"
 pro_path <-"G:/我的雲端硬碟/研究室計畫/2024/玉管處/2025/" 
 
 ```
@@ -62,8 +63,8 @@ tccip_region_ext <- function(i,var,wpath,coord){
 ```
 ## 2.2 data processing
 ```{r}
-year <- 1995:2022
-core <- makeCluster(10)
+year <- 1995:2023
+core <- makeCluster(20)
 temp_mean <-parLapply(core,year,tccip_region_ext,var="平均溫",wpath=w_path,coord=p_coord)
 temp_max <-parLapply(core,year,tccip_region_ext,var="最高溫",wpath=w_path,coord=p_coord)
 temp_min <-parLapply(core,year,tccip_region_ext,var="最低溫",wpath=w_path,coord=p_coord)
@@ -109,7 +110,7 @@ lapply(1:3,function(i){
   dt <- clm_Y[[i]]
   var <- y_var[i]
   dir.create(paste0("result/plot/yearly_",var))
-  lapply(1995:2022,function(y){
+  lapply(1995:2023,function(y){
     dt_y <- dt[year==y]
     dt_y <-st_as_sf(dt_y,wkt ="wkt",crs=4326) 
     p <- ggplot()+
@@ -142,7 +143,7 @@ lapply(1:3,function(i){
   dt <- clm_Y[[i]]
   var <- y_var[i]
   dir.create(paste0("result/plot/yearly_org_",var))
-  lapply(1995:2022,function(y){
+  lapply(1995:2023,function(y){
     dt_y <- dt[year==y]
     dt_y <-st_as_sf(dt_y,wkt ="wkt",crs=4326) 
     p <- ggplot()+
@@ -161,7 +162,7 @@ lapply(1:3,function(i){
 })
 PRE_Y <- clm_Y[[4]]
 ### deal with precipitation
-  lapply(1995:2022,function(y){
+  lapply(1995:2023,function(y){
     dt_y <- PRE_Y[year==y]
     dt_y <-st_as_sf(dt_y,wkt ="wkt",crs=4326) 
     p <- ggplot()+
@@ -223,7 +224,7 @@ p2 <- ggplot(data=mean_T_y,aes(x=year,y=STI,fill=STI))+
   geom_col()+
   scale_fill_gradient2(
             high ="#A62621",
-            mid = "gray90",
+            mid = "gray95",
             low = "#3C56A6",
             midpoint = 0,
             limits=c(-2,2))+
@@ -252,27 +253,43 @@ vt_stat[,.(temp=mean(temp),max=max(temp),min=min(temp)),by=.(VT)] %>%
   write.csv(file = paste0(pro_path,"result/vegetatio_zone_temp_stat.csv"))
 vt_stat[,STI:=(temp-mean(temp))/sd(temp),by=.(VT)]
 vt_stat[,mean_T:=mean(temp),by=.(VT)]
+dict <- data.table(
+  vt = 1:8,
+  ch_name = c("山麓帶","次山地帶下層","次山地帶上層","山地帶下層",
+           "山地帶上層","上層山地帶","次高山帶","高山帶")
+)
+vt_stat <- vt_stat[dict,on=.(VT=vt)]
+vt_stat[,ch_name:=factor(ch_name,levels=c("山麓帶","次山地帶下層",
+                                        "次山地帶上層","山地帶下層",
+                                        "山地帶上層","上層山地帶",
+                                        "次高山帶","高山帶"))]
+showtext_auto()
+showtext_opts(dpi = 300) 
 ggplot(data=vt_stat,aes(x=year,y=temp))+
   geom_line()+
   geom_point()+
   geom_hline(aes(yintercept = mean_T),linetype="dashed")+
-  facet_wrap(VT~.,ncol=2,scales = "free_y")+
+  facet_wrap(ch_name~.,ncol=2,scales = "free_y")+
   geom_smooth(color="darkred")+
   scale_x_continuous(breaks = seq(1995,2023,5))+
-  labs(x="Year",y="Temperature (°C)")
+  labs(x="Year",y="Temperature (°C)")+
+  theme(text = element_text(family = '微軟正黑體',size=20))+
+  theme_bw()
 ggsave(paste0(pro_path,"result/plot/temp_yearly_by_veg_zone.jpeg"),width=8,height = 9)
 
 ggplot(data=vt_stat,aes(x=year,y=STI,fill=STI))+
   geom_col()+
-  facet_wrap(VT~.,ncol=2,scales = "free_y")+
+  facet_wrap(ch_name~.,ncol=2,scales = "free_y")+
   scale_fill_gradient2(
             high ="#A62621",
-            mid = "gray90",
+            mid = "gray98",
             low = "#3C56A6",
             midpoint = 0,
             limits=c(-2.5,2.5))+
   labs(x="Year",y="Standardized temperature index")+
-  scale_x_continuous(breaks = seq(1995,2023,5))
+  scale_x_continuous(breaks = seq(1995,2023,5))+
+  theme(text = element_text(family = '微軟正黑體'))+
+  theme_bw()
 ggsave(paste0(pro_path,"result/plot/STI_yearly_by_veg_zone.jpeg"),width=8,height = 9)
 ```
 ## 2.6 precipitation analysis
@@ -287,7 +304,8 @@ ggplot()+
  labs(fill="PRECIP")+
  scale_fill_gradient(
    high ="#145EA4",
-   low = "gray90")
+   low = "gray90")+
+  theme_bw()
 
 ggsave(paste0(pro_path,"result/plot/PRE_mean_region.jpeg"),
       height = 5,width = 8,dpi=600)
@@ -304,7 +322,7 @@ for (i in unique(pre_mon$wkt)){
       wkt==i,spi_12:=as.data.table(spei(value,12)$fitted)]
 }
 dir.create(paste0(pro_path,"result/plot/weather/SPI/"))
-lapply(1996:2022,function(y){
+lapply(1996:2023,function(y){
     dt_y <- pre_mon[year==y,.(spi_12=mean(spi_12)),by=.(year,wkt)]
     dt_y <-st_as_sf(dt_y,wkt ="wkt",crs=4326) 
     p <- ggplot()+
@@ -312,25 +330,18 @@ lapply(1996:2022,function(y){
           labs(fill="SPI_12",title =y)+
           scale_fill_gradient2(
             high ="#00896C",
-            mid = "gray90",
+            mid = "gray95",
             low = "#CAAD5F",
             midpoint = 0,
             limits=c(-2.5,2.5)
-          )
+          )+
+      theme_bw()
     ggsave(paste0(pro_path,"result/plot/weather/SPI/SPI_",y,".jpeg"),
            height = 5,width = 8,dpi=600,plot=p)
   })
+
 pre_mon_reg <- pre_mon[,.(spi_12=mean(spi_12,na.rm=T),spi_3=mean(spi_3,na.rm=T)),
                        by=.(year)]
-ggplot()+
-     geom_sf(data=dt_y,aes(fill=spi_12))+
-       labs(fill="SPI_12",title =y)+
-       scale_fill_gradient2(
-                high ="#00896C",
-                mid = "gray90",
-                low = "#CAAD5F",
-                midpoint = 0,
-                limits=c(-2.5,2.5))
 
 ```
 
@@ -339,7 +350,11 @@ ggplot()+
 # 3. ERA5_data
 
 ```{r}
-era5_dt <- fread(paste0(pro_path,"rawdata/weather_table/spei_index_data_grid.csv"))
+era5_dt <- fread(paste0(pro_path,"rawdata/weather_index_data.csv"))
+era5_coord <- fread(paste0(pro_path,"rawdata/ERA5_data_sample_point_yushan.csv"))
+era5_dt <- era5_dt[era5_coord,on=.(plot_id)]
+setnames(era5_dt,"summit","plot_id")
+setnames(era5_dt,c("LON","LAT"),c("x","y"))
 era5_dt[,wkt:=paste("POLYGON ((",
                    x-0.05,y-0.05,",",
                    x+0.05,y-0.05,",",
@@ -350,8 +365,7 @@ era5_dt[,wkt:=paste("POLYGON ((",
   
 
 era5_monthly_reg <- 
-  era5_dt[,.(spei_12=mean(spei_12,na.rm=T),
-             spei_24=mean(spei_24,na.rm=T)),by=.(year,month)]
+  era5_dt[,.(spei_12=mean(spei_12,na.rm=T)),by=.(year,month)]
 era5_monthly_reg[,date:=as.Date(paste(year,month,"1",sep="-"))]
 ggplot(data=era5_monthly_reg,aes(x=date,y=spei_12,fill=spei_12))+
        geom_col()+
@@ -365,17 +379,21 @@ ggplot(data=era5_monthly_reg,aes(x=date,y=spei_12,fill=spei_12))+
        )+
   theme_bw()+
   scale_x_date(breaks="2 years",
-               limits =c(as.Date("2000-01-01"),as.Date("2024-04-01")),
+               limits =c(as.Date("1990-01-01"),as.Date("2025-12-31")),
                date_labels = "%Y")
- ggsave(paste0(pro_path,"result/plot/spei_12_2000_2024_04.jpeg"),
-        height = 6,width = 10,dpi=300)
+ ggsave(paste0(pro_path,"result/plot/spei_12_1990_2025_09.jpeg"),
+        height = 5,width = 10,dpi=300)
 
 era5_sf_ext <-st_as_sf(era5_dt[year==2021&month==5],wkt ="wkt",crs=4326) 
-era5_sf_res<-st_as_sf(era5_dt[year==2024&month==4],wkt ="wkt",crs=4326) 
-p1 <- ggplot()+
-       geom_sf(data=era5_sf_ext,aes(fill=spei_12),color="gray")+
+era5_sf_res<-st_as_sf(era5_dt[year==2024&month==5],wkt ="wkt",crs=4326)
+era5_sf_fin<-st_as_sf(era5_dt[year==2025&month==5],wkt ="wkt",crs=4326)
+p_date <- list(c(1991,12),c(2021,4),c(2025,8))
+spei_p <- lapply(p_date,function(date_v){
+  dt <-st_as_sf(era5_dt[year==date_v[1]&month==date_v[2]],wkt ="wkt",crs=4326)
+  p <- ggplot()+
+       geom_sf(data=dt,aes(fill=spei_12),color="gray")+
        geom_sf(data=region,fill=NA)+
-       labs(fill="SPEI-12",title ="2021-05")+
+       labs(fill="SPEI-12",title =paste0(date_v[1],"-",date_v[2]))+
        scale_fill_gradient2(
             high ="#00896C",
             mid = "gray95",
@@ -383,25 +401,13 @@ p1 <- ggplot()+
          midpoint = 0,
          limits=c(-2.5,2.5)
        )+
-   geom_text(data=era5_sf_ext,aes(x=x,y=y,label=round(spei_12,3)))
-p2 <- ggplot()+
-       geom_sf(data=era5_sf_res,aes(fill=spei_12),color="gray")+
-       geom_sf(data=region,fill=NA)+
-       labs(fill="SPEI-12",title ="2024-04")+
-       scale_fill_gradient2(
-            high ="#00896C",
-            mid = "gray95",
-            low = "#CAAD5F",
-         midpoint = 0,
-         limits=c(-2.5,2.5)
-       )+
-   geom_text(data=era5_sf_res,aes(x=x,y=y,label=round(spei_12,3)))
-p1/p2+ plot_layout(guides = "collect")+ plot_annotation(tag_levels = 'A')
+   geom_text(data=dt,aes(x=x,y=y,label=round(spei_12,3)))+
+  theme_bw()
+  return(p)
+})
+(spei_p[[1]]+spei_p[[2]])/(spei_p[[3]]+ plot_spacer())+ plot_layout(guides = "collect")+ plot_annotation(tag_levels = 'A')
 
 ggsave(paste0(pro_path,"result/plot/spei_12_region_display.jpeg"),
-        height = 10,width = 8,dpi=600)
-p1+p2+ plot_layout(guides = "collect")+ plot_annotation(tag_levels = 'A')
-ggsave(paste0(pro_path,"result/plot/spei_12_region_display_2.jpeg"),
         height = 10,width = 8,dpi=600)
 
 ```

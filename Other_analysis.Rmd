@@ -35,36 +35,55 @@ min(g_value$NDVI,na.rm=T)
 ##1.2 改使用modis與sentinel
 
 ```{r}
-g_a_st <- lapply(2001:2023,function(year){
-    m<- rast(paste0(pro_path,"/rawdata/layer/modis_landuse/Yushan_landuse_modis_",year,".tif"))
-    g_f <- (m[[3]] >0)  & (m[[3]] < 5)
+
+g_a_st <- lapply(2000:2022,function(year){
+    m<- rast(paste0(pro_path,"/rawdata/layer/landuse_grassland/Yushan_grasslandP_",year,".tif"))
+    g_f <- (m[[1]]>11) 
     dt <- global(g_f, "sum", na.rm = TRUE) %>% as.data.table()
     dt[,y:=year]
     return(dt)
 })
 g_a_st <- rbindlist(g_a_st)
-g_a_st[,sum_area:=sum*0.5*0.5]
-g_a_st[,sum_area:=sum_area/70.25*33.869]
-
-### 繪圖
+g_a_st[,sum_area:=sum*0.03*0.03]
 ggplot(g_a_st,aes(x=y,y=sum_area))+
     geom_line()+
     theme_bw()+
     geom_smooth()+
     labs(x="Year",y= expression("Grasslnad area (" ~ km^2~")"))+
-    ylim(c(20,40))+
+    scale_x_continuous(breaks = seq(2000,2024,2))
+ggsave(paste0(pro_path,"result/plot/grassland_area_2001_2023.jpeg"),height = 5,width = 7,dpi=600)
+
+g_g_st <- lapply(2016:2023,function(year){
+    m<- rast(paste0(pro_path,"rawdata/layer/grass/",year,".tif"))
+    g_f <- (m[[1]]>0) 
+    dt <- global(g_f, "sum", na.rm = TRUE) %>% as.data.table()
+    dt[,y:=year]
+    return(dt)
+})
+g_g_st <- rbindlist(g_g_st)
+g_g_st[,sum_area:=sum*0.01*0.01]
+
+### 繪圖
+ggplot(g_g_st,aes(x=y,y=sum_area))+
+    geom_line()+
+    theme_bw()+
+    geom_smooth()+
+    labs(x="Year",y= expression("Grasslnad area (" ~ km^2~")"))+
     scale_x_continuous(breaks = seq(2000,2024,2))
 ggsave(paste0(pro_path,"result/plot/grassland_area_2001_2023.jpeg"),height = 5,width = 7,dpi=600)
 ```
 # 2. 推移帶樣區濕度分析
 ```{r}
+library(data.table)
+library(tidyverse)
 wdt <- fread(paste0(pro_path,"rawdata/TKK_soil_moi_tem_202404_202411.csv"))
 colnames(wdt)[2:6] <- c("Date_time","T_N6","ST","T_12","moist")
 wdt[,time:=as.POSIXct(Date_time)]
 wdt[,type:=substr(plot,1,1)]
-ggplot(wdt,aes(x=time,y=moist,color=plot))+
+ggplot(wdt[type=="G"],aes(x=time,y=moist,color=plot))+
     geom_line()+
-    facet_grid(type~.)
+    facet_grid(type~.)+
+    scale_x_datetime(limits = c(as.POSIXct("2024/08/15"),as.POSIXct("2024/09/01")))
 ```
 
 # 3. 國家公園碳吸存分析
@@ -80,13 +99,12 @@ c_lay <- lapply(carbon_st_p,function(layer){
 }) 
 
 carb_all <- c_lay[[1]][[2]]*0.0001
-
 for ( i in 2:24){
     carb <- c_lay[[i]][[2]]
     carb_all <- carb_all+carb*0.0001
 }
-plot(carb_all)
-writeRaster(carb_all,paste0(pro_path,"/result/NPP_2001_2024.tif"), overwrite = TRUE)
+carb_all_mean <- carb_all/24
+writeRaster(carb_all_mean,paste0(pro_path,"/result/NPP_2001_2024_mean.tif"), overwrite = TRUE)
 ### calculate the total NPP
 NPP_stat_yearly <- lapply(c_lay,function(layer){
     sum <- global(layer[[2]],sum,na.rm=TRUE) %>% as.data.table()
@@ -101,15 +119,18 @@ lapply(1:24,function(i){
 
 NPP_stat_yearly <- rbindlist(NPP_stat_yearly)
 NPP_stat_yearly[,Tg:=sum/10^6][,year:=2001:2024]
+
 ggplot(NPP_stat_yearly,aes(x=year,y=Tg))+
-    geom_line()+
-    ylim(c(1,1.5))+
+    geom_col(fill="gray30",width = 0.5)+
+    geom_hline(yintercept = mean(NPP_stat_yearly$Tg),lty="dashed",color="darkred",linewidth=0.8)+
     scale_x_continuous(breaks=seq(2001,2024,2))+
-    theme_bw()
-
+    scale_y_continuous(breaks=seq(0,1.8,0.2))+
+    theme_bw()+
+    labs(x="Year",y="Carbon sink of vegetation (Mt)")
+ggsave(paste0(pro_path,"result/plot/Total_carbon_sink_2001_2024.jpeg"),height = 3,width = 7,dpi=600)
 ### check the difference between 2004 and 2024
-NPP_dif_04_24 <- (c_lay[[4]][[2]]-c_lay[[24]][[2]])*0.0001
+NPP_dif_23_24 <- (c_lay[[23]][[2]]-c_lay[[24]][[2]])*0.0001
 
-writeRaster(NPP_dif_04_24,paste0(pro_path,"result/plot/NPP_layer/NPP_diff_04_24.tif"))
+writeRaster(NPP_dif_23_24,paste0(pro_path,"result/plot/NPP_layer/NPP_diff_23_24.tif"))
 ```
 

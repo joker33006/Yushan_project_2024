@@ -1,0 +1,305 @@
+---
+title: "maxent analysis"
+output: html_notebook
+---
+# 概述
+使用TCCIP的AR6資料，建立物種的maxent模型，並檢視不同氣候條件下，物種的分布狀況。
+
+# 0. package
+```{r}
+library(data.table)
+library(tidyverse)
+library(viridis)
+library(dismo)
+library(terra)
+library(sf)
+library(patchwork)
+library(rasterVis) ## 轉換結果讓ggplot可以繪製
+
+path <- "G:/我的雲端硬碟/研究室計畫/2024/玉管處/"
+
+```
+
+# 1. 前置資料準備
+## 1.1 物種資料
+先根據過去的gloria分析中，挑選出分布年均溫<10度，溫差<6度以及iucn為NT(含)以上，再依據過去整理的物種分布彙整出點位資訊。
+
+```{r}
+sp_bs <- fread(paste0(path,"2025/rawdata/species_niche/All_species_recode_in_GBIF.csv"))
+### 加入更多的穗花八寶
+add_sp <- fread(paste0(path,"2025/rawdata/species_niche/0007431-250914085247600.csv"))
+
+add_sp[,sp_code:="SP118"]
+add_sp[,key:=paste0(decimalLatitude,decimalLongitude)]
+add_sp <- add_sp[!duplicated(key)]
+sp_bs <- rbind(sp_bs,add_sp,fill=TRUE)
+ch_sp <- fread(paste0(path,"2025/rawdata/species_niche/select_species.csv"))
+sp_loc <- sp_bs[ch_sp,on=.(sp_code)]
+sp_loc <- sp_loc[!decimalLongitude<0]
+write.csv(sp_loc[,.N,by=.(sp_code)],paste0(path,"2025/result/recode_warmming_i_species.csv"))
+sp_loc[,.N,by=.(sp_code)]
+
+
+```
+## 1.2. 切出bio1-19氣候因子
+為了配合圖層大小，把chelsa氣候圖層裁切到只剩下台灣範圍，並轉成TWD97系統，再另存檔案
+```{r}
+path_climate <- list.files("D:/climate_data/Chelsa_current_2019",
+                           full.names = T,
+                           pattern = ".tif$")
+bio_clim <- lapply(path_climate,rast)
+tw_reg <-vect(paste0(path,"2025/rawdata/species_niche/TW_range.gpkg")) 
+## 裁切
+path_climate
+names(bio_clim[[1]])
+bio_clim_y <- lapply(1:length(bio_clim),function(i){
+  crop <- crop(bio_clim[[i]],tw_reg)
+  clip <- mask(crop,tw_reg)
+  writeRaster(clip,paste0(path,"2025/rawdata/layer/chelsa/past/",names(bio_clim[[i]]),".tif"))
+  return(clip)
+})
+rm(bio_clim,bio_clim_y)
+
+```
+## 1.3 maxent 分析
+調整氣候因子，為了配合後續未來氣候的溫度單位，
+調整溫度x0.1
+bio1,bio2,bio4,bio5-bio11
+調整溫度x0.001
+bio3
+```{r}
+ynp_reg <-st_read(paste0(path,"2025/rawdata/layer/Yushan_NP_region.shp")) 
+path_clim <- list.files(paste0(path,"2025/rawdata/layer/chelsa/past/"),
+                       full.names = T,pattern ="tif$")
+rast_clim <- lapply(path_clim,raster)
+names(rast_clim[[1]])
+#### 溫度調整
+for (i in 1:11){
+ rast_clim[[i]] <- rast_clim[[i]]*0.1  
+}
+rast_clim[[3]] <- rast_clim[[3]]*0.01
+rast_clim[[2]] <- NULL
+###
+predictors <- stack(rast_clim)
+occ <- fread(paste0(path,"/2025/rawdata/species_niche/sample_point_background.csv"))
+
+setnames(occ,c("x","y"),c("lon","lat"))
+setnames(sp_loc,c("decimalLongitude","decimalLatitude"),c("lon","lat"))
+### 進行預測
+maxE_r <- lapply(unique(sp_loc$sp_code),function(sp){
+  dt_presence <- sp_loc[sp_code==sp,.(lon,lat)]
+  dt_absence <- occ[,.(lon,lat)]
+  maxent_R <- maxent(predictors[[1:10]],p=dt_presence,a=dt_absence)
+  return(maxent_R)
+})
+unique(sp_loc$sp_code)
+maxE_r[[15]]
+### 產出目前條件的範圍值
+curr_rast <- lapply(maxE_r,function(maxE){
+  r <- predict(maxE,predictors)
+  return(r)
+})
+
+pred_df <- lapply(1:length(curr_rast),function(i){
+  dt <- as.data.frame(curr_rast[[i]], xy = TRUE)
+  name <- ch_sp$sp_code[i]
+  colnames(dt)[3] <- "suitability"
+  p <- ggplot() +
+    geom_raster(data=dt, aes(x = x, y = y, fill = suitability)) +
+    scale_fill_viridis(name = "Suitability", 
+                       option = "turbo",
+                       limits=c(0,1)) +
+    coord_equal() +
+    theme_bw()
+  p <- p+
+      geom_sf(
+      data =ynp_reg,fill = NA,
+      color = "red",
+      linewidth = 0.5)
+  ggsave(paste0(path,"2025/result/plot/maxent/current/",name,".jpeg"),plot=p,
+         height=8,width=7,dpi=300)
+  return(p)
+}) 
+
+```
+## 1.4 未來氣候預測
+將未來不同情境的氣候條件切成相同範圍，並丟進建立好的模型做預測
+```{r}
+path_clim <- list.files("D:/climate_data/chelsa/future/2041_2070",
+                           full.names = T,
+                           pattern = ".tif$")
+bio_cf <- lapply(path_clim,rast)
+tw_reg <-st_read(paste0(path,"2025/rawdata/species_niche/TW_range3.shp"))
+clip_reg <-st_read(paste0(path,"2025/rawdata/species_niche/TW_range.gpkg"))
+tw_reg2 <- st_intersection(tw_reg, clip_reg)
+plot(tw_reg2)
+## 裁切
+names(bio_cf)
+lapply(1:length(bio_cf),function(i){
+  crop <- crop(bio_cf[[i]],tw_reg2)
+  clip <- mask(crop,tw_reg2)
+  writeRaster(clip,paste0(path,"2025/rawdata/layer/chelsa/2041-2070/",names(bio_cf[[i]]),".tif"))
+  return(clip)
+})
+rm(bio_cf,path_clim)
+### 區分情境
+future_clim <- lapply(c("126","370","585"),function(num){
+  s_path <- list.files(paste0(path,"2025/rawdata/layer/chelsa/2041-2070/"),
+                           full.names = T,
+                           pattern = paste0("_ssp",num))
+  rast_clim <- lapply(s_path,raster)
+  predictors <- stack(rast_clim)
+  return(predictors)
+})
+n1 <- gsub("_2041.2070_gfdl.esm4_ssp126_V.2.1","",names(future_clim[[1]]))
+n2 <- gsub("bio","bio10_",n1)
+n3 <- gsub("_(\\d)$","_0\\1",n2)
+n3
+names(future_clim[[1]])
+fut_c <- lapply(future_clim,function(clim){
+  names(clim) <- n3
+  return(clim)
+})
+
+
+{
+ssp126_rast <- lapply(maxE_r,function(maxE){
+  r <- predict(maxE,fut_c[[1]])
+  return(r)
+})
+ssp370_rast <- lapply(maxE_r,function(maxE){
+  r <- predict(maxE,fut_c[[2]])
+  return(r)
+})
+ssp585_rast <- lapply(maxE_r,function(maxE){
+  r <- predict(maxE,fut_c[[3]])
+  return(r)
+})
+}
+{
+ssp126_df <- lapply(1:length(ssp126_rast),function(i){
+  dt <- as.data.frame(ssp126_rast[[i]], xy = TRUE)
+  name <- ch_sp$sp_code[i]
+  colnames(dt)[3] <- "suitability"
+  dt$sp_code <- name
+  p <- ggplot() +
+    geom_raster(data=dt, aes(x = x, y = y, fill = suitability)) +
+    scale_fill_viridis(name = "Suitability", 
+                       option = "turbo",
+                       limits=c(0,1)) +
+    coord_equal() +
+    theme_bw()
+  p <- p+
+      geom_sf(
+      data =ynp_reg,fill = NA,
+      color = "red",
+      linewidth = 0.5)
+  ggsave(paste0(path,"2025/result/plot/maxent/future/",name,"_ssp126.jpeg"),
+         plot=p,
+         height=8,width=7,dpi=300)
+  return(p)
+}) 
+
+ssp370_df <- lapply(1:length(ssp370_rast),function(i){
+  dt <- as.data.frame(ssp370_rast[[i]], xy = TRUE)
+  name <- ch_sp$sp_code[i]
+  colnames(dt)[3] <- "suitability"
+  dt$sp_code <- name
+  p <- ggplot() +
+    geom_raster(data=dt, aes(x = x, y = y, fill = suitability)) +
+    scale_fill_viridis(name = "Suitability", 
+                       option = "turbo",
+                       limits=c(0,1)) +
+    coord_equal() +
+    theme_bw()
+  p <- p+
+      geom_sf(
+      data =ynp_reg,fill = NA,
+      color = "red",
+      linewidth = 0.5)
+  ggsave(paste0(path,"2025/result/plot/maxent/future/",name,"_ssp370.jpeg"),
+         plot=p,
+         height=8,width=7,dpi=300)
+  return(p)
+}) 
+ssp585_df <- lapply(1:length(ssp585_rast),function(i){
+  dt <- as.data.frame(ssp585_rast[[i]], xy = TRUE)
+  name <- ch_sp$sp_code[i]
+  colnames(dt)[3] <- "suitability"
+  dt$sp_code <- name
+  p <- ggplot() +
+    geom_raster(data=dt, aes(x = x, y = y, fill = suitability)) +
+    scale_fill_viridis(name = "Suitability", 
+                       option = "turbo",
+                       limits=c(0,1)) +
+    coord_equal() +
+    theme_bw()
+  p <- p+
+      geom_sf(
+      data =ynp_reg,fill = NA,
+      color = "red",
+      linewidth = 0.5)
+  ggsave(paste0(path,"2025/result/plot/maxent/future/",name,"_ssp585.jpeg"),
+         plot=p,
+         height=8,width=7,dpi=300)
+  return(p)
+})
+}
+```
+## 1.5 繪圖產出
+將22個物種4個情境的圖組合
+使用到的物件
+現況:curr_df
+ssp126_df
+ssp370_df
+ssp585_df
+```{r}
+pred_df[[1]]
+lapply(1:length(pred_df),function(i){
+  name <- ch_sp$sp_code[i]
+  p1 <- pred_df[[i]]+ 
+    xlim(c(119,122.5))+
+    ylim(c(21.8,25.5))+
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+  p2 <- ssp126_df[[i]]+ 
+    xlim(c(119,122.5))+
+    ylim(c(21.8,25.5))+
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+  p3 <- ssp370_df[[i]]+ 
+    xlim(c(119,122.5))+
+    ylim(c(21.8,25.5))+ 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+  p4 <- ssp585_df[[i]]+ 
+    xlim(c(119,122.5))+
+    ylim(c(21.8,25.5))+ 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+  p <- p1+p2+p3+p4+ 
+    plot_layout(guides = "collect")+ 
+    plot_annotation(tag_levels = 'A')
+  ggsave(paste0(path,"2025/result/plot/maxent/all/",name,"_maxE_result.jpeg"),
+         height=9,width=8,dpi=600,plot=p)
+
+})
+
+```
+
+## 1.6 製作表格
+使用rast計算各個情境的面積
+```{r}
+
+pred_dt <- lapply(c("curr","ssp126","ssp370","ssp585"),function(s){
+  pred_dt <- lapply(1:length(ssp585_rast),function(i){
+    rast <- get(paste0(s,"_rast"))
+    dt <- as.data.frame(rast[[i]], xy = TRUE) %>% as.data.table()
+    dt[,name:=ch_sp$sp_code[i]][,context:=s]
+  }) %>% rbindlist(.,fill=TRUE)
+}) %>% rbindlist(.,fill=TRUE)
+colnames(pred_dt)[3] <- "suitability"
+pred_dt[suitability>=0.5&suitability<0.75,SC:=1][
+  suitability>=0.75,SC:=2]
+pred_dt_sum <- pred_dt[!is.na(suitability),.N*0.7696,by=.(name,context,SC)]
+colnames(pred_dt_sum)
+pred_f <- dcast(name+SC~context,data=pred_dt_sum,value.var = "V1")
+write.csv(pred_f,paste0(path,"2025/result/climate_change_stat_predict.csv"))
+```
+
